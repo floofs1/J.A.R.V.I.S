@@ -1,58 +1,299 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import base64
+import tempfile
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 import uuid
-from datetime import datetime
-
+from datetime import datetime, timezone
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Logging setup (must be before using logger)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
-app = FastAPI()
+# LLM Key
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 
-# Create a router with the /api prefix
+app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
+# ─── Pydantic Models ───
 
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+class ConversationCreate(BaseModel):
+    title: Optional[str] = "New Conversation"
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+class ConversationResponse(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: int = 0
 
-# Add your routes to the router instead of directly to app
+class MessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    message_type: str = "text"
+    image_base64: Optional[str] = None
+    audio_base64: Optional[str] = None
+    created_at: str
+
+class ChatRequest(BaseModel):
+    conversation_id: str
+    message: str
+    image_base64: Optional[str] = None
+
+class ImageGenerateRequest(BaseModel):
+    conversation_id: str
+    prompt: str
+
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "nova"
+
+# ─── Helper Functions ───
+
+async def get_conversation_messages(conversation_id: str, limit: int = 20):
+    messages = await db.messages.find(
+        {"conversation_id": conversation_id},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    messages.reverse()
+    return messages
+
+async def save_message(conversation_id: str, role: str, content: str,
+                       message_type: str = "text", image_base64: str = None,
+                       audio_base64: str = None):
+    msg = {
+        "id": str(uuid.uuid4()),
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "message_type": message_type,
+        "image_base64": image_base64,
+        "audio_base64": audio_base64,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.messages.insert_one(msg)
+    await db.conversations.update_one(
+        {"id": conversation_id},
+        {"$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
+         "$inc": {"message_count": 1}}
+    )
+    return {k: v for k, v in msg.items() if k != "_id"}
+
+# ─── Conversation Endpoints ───
+
+@api_router.post("/conversations", response_model=ConversationResponse)
+async def create_conversation(body: ConversationCreate):
+    now = datetime.now(timezone.utc).isoformat()
+    conv = {
+        "id": str(uuid.uuid4()),
+        "title": body.title or "New Conversation",
+        "created_at": now,
+        "updated_at": now,
+        "message_count": 0,
+    }
+    await db.conversations.insert_one(conv)
+    return {k: v for k, v in conv.items() if k != "_id"}
+
+@api_router.get("/conversations", response_model=List[ConversationResponse])
+async def list_conversations():
+    convs = await db.conversations.find({}, {"_id": 0}).sort("updated_at", -1).to_list(100)
+    return convs
+
+@api_router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    conv = await db.conversations.find_one({"id": conversation_id}, {"_id": 0})
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    messages = await db.messages.find(
+        {"conversation_id": conversation_id}, {"_id": 0}
+    ).sort("created_at", 1).to_list(1000)
+    return {"conversation": conv, "messages": messages}
+
+@api_router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    await db.conversations.delete_one({"id": conversation_id})
+    await db.messages.delete_many({"conversation_id": conversation_id})
+    return {"status": "deleted"}
+
+# ─── Chat Endpoint (Text + Vision) ───
+
+@api_router.post("/chat")
+async def chat(body: ChatRequest):
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+
+    # Save user message
+    user_msg = await save_message(
+        body.conversation_id, "user", body.message,
+        message_type="image" if body.image_base64 else "text",
+        image_base64=body.image_base64
+    )
+
+    chat_instance = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=body.conversation_id,
+        system_message=(
+            "You are J.A.R.V.I.S., an advanced AI assistant inspired by the iconic AI from Iron Man. "
+            "You are brilliant, witty, precise, and slightly formal but warm. "
+            "You address the user respectfully. You provide insightful, comprehensive answers. "
+            "Keep responses concise but thorough. Use technical language when appropriate. "
+            "You can analyze images when provided. Be helpful and proactive."
+        )
+    )
+    chat_instance.with_model("openai", "gpt-5.2")
+
+    # Build user message with optional image
+    file_contents = []
+    if body.image_base64:
+        file_contents.append(ImageContent(image_base64=body.image_base64))
+
+    user_message = UserMessage(text=body.message, file_contents=file_contents if file_contents else None)
+
+    try:
+        response_text = await chat_instance.send_message(user_message)
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        response_text = "I apologize, but I encountered an issue processing your request. Please try again."
+
+    # Save AI response
+    ai_msg = await save_message(body.conversation_id, "assistant", response_text)
+
+    # Auto-title conversation if it's the first message
+    conv = await db.conversations.find_one({"id": body.conversation_id}, {"_id": 0})
+    if conv and conv.get("message_count", 0) <= 2 and conv.get("title") == "New Conversation":
+        short_title = body.message[:50] + ("..." if len(body.message) > 50 else "")
+        await db.conversations.update_one(
+            {"id": body.conversation_id},
+            {"$set": {"title": short_title}}
+        )
+
+    return {"user_message": user_msg, "ai_message": ai_msg}
+
+# ─── Speech-to-Text Endpoint ───
+
+@api_router.post("/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    from emergentintegrations.llm.openai import OpenAISpeechToText
+
+    stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
+
+    # Save uploaded file to temp
+    audio_bytes = await audio.read()
+    suffix = ".webm"
+    if audio.filename:
+        suffix = Path(audio.filename).suffix or ".webm"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        with open(tmp_path, "rb") as audio_file:
+            response = await stt.transcribe(
+                file=audio_file,
+                model="whisper-1",
+                response_format="json",
+                language="en"
+            )
+        return {"text": response.text}
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+# ─── Text-to-Speech Endpoint ───
+
+@api_router.post("/tts")
+async def text_to_speech(body: TTSRequest):
+    from emergentintegrations.llm.openai import OpenAITextToSpeech
+
+    tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+
+    try:
+        audio_base64 = await tts.generate_speech_base64(
+            text=body.text,
+            model="tts-1",
+            voice=body.voice,
+            response_format="mp3",
+            speed=1.0
+        )
+        return {"audio_base64": audio_base64}
+    except Exception as e:
+        logger.error(f"TTS error: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
+
+# ─── Image Generation Endpoint ───
+
+@api_router.post("/generate-image")
+async def generate_image(body: ImageGenerateRequest):
+    from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+
+    image_gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
+
+    # Save user message
+    user_msg = await save_message(
+        body.conversation_id, "user", f"🎨 Generate image: {body.prompt}",
+        message_type="text"
+    )
+
+    try:
+        images = await image_gen.generate_images(
+            prompt=body.prompt,
+            model="gpt-image-1",
+            number_of_images=1
+        )
+        if images and len(images) > 0:
+            image_base64 = base64.b64encode(images[0]).decode('utf-8')
+            ai_msg = await save_message(
+                body.conversation_id, "assistant",
+                f"Here's the generated image for: {body.prompt}",
+                message_type="image",
+                image_base64=image_base64
+            )
+            return {"user_message": user_msg, "ai_message": ai_msg, "image_base64": image_base64}
+        else:
+            raise HTTPException(status_code=500, detail="No image was generated")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Image generation error: {e}")
+        error_detail = f"Image generation failed: {str(e)}"
+        await save_message(
+            body.conversation_id, "assistant",
+            "I apologize, but I was unable to generate that image. Please try a different prompt.",
+            message_type="text"
+        )
+        raise HTTPException(status_code=500, detail=error_detail)
+
+# ─── Health Check ───
+
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "J.A.R.V.I.S. API Online", "status": "operational"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
+# ─── App Setup ───
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
-
-# Include the router in the main app
 app.include_router(api_router)
 
 app.add_middleware(
@@ -62,13 +303,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
