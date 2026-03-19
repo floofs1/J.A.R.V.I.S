@@ -1,0 +1,100 @@
+{
+  "project_name": "Jarvis AI Assistant",
+  "app_type": "Expo React Native Mobile App",
+  "design_philosophy": {
+    "theme": "Stark OS / FUI (Futuristic User Interface)",
+    "mood": "High-Tech, Precision, Holographic, Dark, Cinematic",
+    "core_principle": "Functionality is Art. The interface should feel like a living organism, not a static page."
+  },
+  "typography": {
+    "font_family_primary": "Rajdhani",
+    "font_family_secondary": "Barlow",
+    "font_family_code": "JetBrains Mono",
+    "scale": {
+      "h1": "text-4xl font-bold tracking-widest uppercase",
+      "h2": "text-2xl font-semibold tracking-wider uppercase",
+      "body": "text-base font-normal tracking-wide",
+      "caption": "text-xs font-light tracking-widest uppercase text-cyan-500/70"
+    }
+  },
+  "colors": {
+    "palette": {
+      "background": "#050505",
+      "surface": "#0A0A0A",
+      "primary": "#00F0FF",
+      "secondary": "#FF2A6D",
+      "accent": "#F0E68C",
+      "success": "#00FF9D",
+      "warning": "#FFD700",
+      "error": "#FF003C",
+      "text_primary": "#E0E0E0",
+      "text_secondary": "#9CA3AF",
+      "border": "rgba(0, 240, 255, 0.2)"
+    },
+    "gradients": {
+      "holo_blue": ["rgba(0, 240, 255, 0)", "rgba(0, 240, 255, 0.1)", "rgba(0, 240, 255, 0)"],
+      "alert_red": ["rgba(255, 42, 109, 0)", "rgba(255, 42, 109, 0.1)", "rgba(255, 42, 109, 0)"]
+    }
+  },
+  "layout_strategy": {
+    "safe_area": "Respect device safe areas. Use 'SafeAreaView' from 'react-native-safe-area-context'.",
+    "spacing": "Generous. Use 'gap-4' to 'gap-8'.",
+    "containers": "Glassmorphism with 1px borders. Use 'BlurView' from 'expo-blur' for backgrounds if nativewind blur is insufficient."
+  },
+  "components": {
+    "HoloCard": {
+      "description": "A container with a subtle glass effect and glowing corner accents.",
+      "styles": "bg-slate-900/50 border border-cyan-500/30 rounded-lg overflow-hidden",
+      "enhancements": "Add absolute positioned divs at corners for 'bracket' look."
+    },
+    "ArcReactor": {
+      "description": "The central voice interaction point. A pulsing circle.",
+      "styles": "rounded-full border-4 border-cyan-400 shadow-[0_0_20px_#00F0FF]",
+      "animation": "Pulse scale and opacity using react-native-reanimated."
+    },
+    "TerminalText": {
+      "description": "Text that types itself out character by character.",
+      "font": "font-mono text-cyan-400"
+    },
+    "ChatBubble": {
+      "user": "bg-cyan-900/20 border-r-2 border-cyan-500 rounded-l-xl rounded-tr-xl self-end mb-4 p-4",
+      "ai": "bg-slate-900/80 border-l-2 border-accent rounded-r-xl rounded-tl-xl self-start mb-4 p-4"
+    }
+  },
+  "assets": {
+    "images": {
+      "background_texture": "https://images.unsplash.com/photo-1632862851787-d31685eee5c9?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDN8MHwxfHNlYXJjaHwzfHxkYXJrJTIwaGV4YWdvbiUyMGdyaWQlMjB0ZXh0dXJlJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3NzM5NTIyNjF8MA&ixlib=rb-4.1.0&q=85",
+      "placeholder_avatar": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80"
+    },
+    "icons": "Use 'lucide-react-native'. Icon color should generally be '#00F0FF' or '#E0E0E0'."
+  },
+  "animation_guidelines": {
+    "library": "react-native-reanimated",
+    "transitions": "LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut) for simple layout changes.",
+    "effects": "Use 'moti' for complex sequences if possible, or raw Reanimated."
+  },
+  "technical_instructions": {
+    "framework": "Expo React Native",
+    "styling_engine": "NativeWind (Tailwind CSS for React Native)",
+    "critical_setup_steps": [
+      "Install NativeWind: 'yarn add nativewind tailwindcss react-native-reanimated react-native-safe-area-context'",
+      "Run 'npx tailwindcss init' to create tailwind.config.js",
+      "Configure 'babel.config.js' to include 'nativewind/babel'",
+      "Add '/// <reference types=\"nativewind/types\" />' to app.d.ts",
+      "Install Fonts: 'yarn add @expo-google-fonts/rajdhani @expo-google-fonts/barlow @expo-google-fonts/jetbrains-mono expo-font'"
+    ],
+    "do_not_use": [
+      "HTML tags like <div>, <span>, <img>. Use <View>, <Text>, <Image>.",
+      "CSS files for styling. Use utility classes or StyleSheet.",
+      "shadcn/ui web components directly. Rebuild them using RN primitives."
+    ]
+  },
+  "instructions_to_main_agent": [
+    "1. INITIALIZATION: Setup NativeWind and Fonts immediately.",
+    "2. LAYOUT: Create a MainLayout that includes the Background Image and SafeAreaView.",
+    "3. NAVIGATION: Use 'expo-router'. Create a Stack navigator with header hidden.",
+    "4. CHAT SCREEN: Implement a FlatList for messages. Use 'KeyboardAvoidingView' for input handling.",
+    "5. VOICE: Use 'expo-speech' (TTS) and custom UI for Voice Input (mocked or real if library available).",
+    "6. API: Connect to FastAPI backend using 'fetch' or 'axios'."
+  ]
+}
