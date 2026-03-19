@@ -9,7 +9,8 @@
         "buildType": "apk"
       },
       "env": {
-        "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
+        "NPM_CONFIG_LEGACY_PEER_DEPS": "true",
+        "EXPO_PUBLIC_BACKEND_URL": "https://python-assistant-3.preview.emergentagent.com"
       }
     },
     "production": {
