@@ -281,24 +281,34 @@ export default function JarvisChat() {
       const data = await res.json();
 
       if (data.audio_base64) {
-        const fileUri = FileSystem.cacheDirectory + 'tts_output.mp3';
-        await FileSystem.writeAsStringAsync(fileUri, data.audio_base64, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          playsInSilentModeIOS: true,
-        });
-        const { sound } = await Audio.Sound.createAsync({ uri: fileUri });
-        soundRef.current = sound;
-        sound.setOnPlaybackStatusUpdate((status) => {
-          if (status.isLoaded && status.didJustFinish) {
-            setIsSpeaking(false);
-            sound.unloadAsync();
-            soundRef.current = null;
-          }
-        });
-        await sound.playAsync();
+        if (Platform.OS === 'web') {
+          // Web: use HTML5 Audio with data URI
+          const audioSrc = `data:audio/mp3;base64,${data.audio_base64}`;
+          const audioEl = new (window as any).Audio(audioSrc);
+          audioEl.onended = () => setIsSpeaking(false);
+          audioEl.onerror = () => setIsSpeaking(false);
+          await audioEl.play();
+        } else {
+          // Native: use expo-av with FileSystem
+          const fileUri = FileSystem.cacheDirectory + 'tts_output.mp3';
+          await FileSystem.writeAsStringAsync(fileUri, data.audio_base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: false,
+            playsInSilentModeIOS: true,
+          });
+          const { sound } = await Audio.Sound.createAsync({ uri: fileUri });
+          soundRef.current = sound;
+          sound.setOnPlaybackStatusUpdate((status) => {
+            if (status.isLoaded && status.didJustFinish) {
+              setIsSpeaking(false);
+              sound.unloadAsync();
+              soundRef.current = null;
+            }
+          });
+          await sound.playAsync();
+        }
       }
     } catch (e) {
       console.error('TTS error:', e);
