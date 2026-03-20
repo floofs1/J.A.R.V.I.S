@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useAudioRecorder, RecordingPresets, useAudioPlayer } from 'expo-audio';
+import { useAudioRecorder, RecordingPresets, AudioPlayer } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import {
@@ -78,36 +78,10 @@ export default function JarvisChat() {
 
   const flatListRef = useRef<FlatList>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const [ttsSource, setTtsSource] = useState<string | null>(null);
-  const [shouldPlayTts, setShouldPlayTts] = useState(false);
+  const audioPlayerRef = useRef<AudioPlayer | null>(null);
 
   // expo-audio hooks
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const player = useAudioPlayer(ttsSource);
-
-  // Auto-play TTS when source changes
-  useEffect(() => {
-    if (shouldPlayTts && player && ttsSource) {
-      try {
-        player.play();
-      } catch (e) {
-        console.error('TTS play error:', e);
-        setIsSpeaking(false);
-      }
-      setShouldPlayTts(false);
-    }
-  }, [ttsSource, shouldPlayTts, player]);
-
-  // Listen for playback completion
-  useEffect(() => {
-    if (!player) return;
-    const subscription = player.addListener('playbackStatusUpdate', (status: any) => {
-      if (status?.didJustFinish || status?.isBuffering === false && status?.playing === false && status?.positionMillis > 0) {
-        setIsSpeaking(false);
-      }
-    });
-    return () => subscription?.remove?.();
-  }, [player]);
 
   // ─── Init ───
   useEffect(() => {
@@ -276,8 +250,14 @@ export default function JarvisChat() {
   // ─── Text-to-Speech ───
   const speakText = async (text: string) => {
     if (isSpeaking) {
-      if (player) {
-        player.pause();
+      // Stop current playback
+      try {
+        if (audioPlayerRef.current) {
+          audioPlayerRef.current.remove();
+          audioPlayerRef.current = null;
+        }
+      } catch (e) {
+        console.error('Stop TTS error:', e);
       }
       setIsSpeaking(false);
       return;
@@ -294,21 +274,50 @@ export default function JarvisChat() {
 
       if (data.audio_base64) {
         if (Platform.OS === 'web') {
-          // Web: use HTML5 Audio with data URI
           const audioSrc = `data:audio/mp3;base64,${data.audio_base64}`;
           const audioEl = new (window as any).Audio(audioSrc);
           audioEl.onended = () => setIsSpeaking(false);
           audioEl.onerror = () => setIsSpeaking(false);
           await audioEl.play();
         } else {
-          // Native: write file and use expo-audio player
-          const fileUri = FileSystem.cacheDirectory + 'tts_output_' + Date.now() + '.mp3';
+          // Native: write base64 to file, then create a new AudioPlayer
+          const fileUri = FileSystem.cacheDirectory + 'tts_' + Date.now() + '.mp3';
           await FileSystem.writeAsStringAsync(fileUri, data.audio_base64, {
             encoding: FileSystem.EncodingType.Base64,
           });
-          setTtsSource(fileUri);
-          setShouldPlayTts(true);
+
+          // Clean up previous player
+          if (audioPlayerRef.current) {
+            try { audioPlayerRef.current.remove(); } catch (_) {}
+          }
+
+          // Create new player and play
+          const newPlayer = new AudioPlayer(fileUri);
+          audioPlayerRef.current = newPlayer;
+          newPlayer.play();
+
+          // Monitor for completion via polling
+          const checkInterval = setInterval(() => {
+            try {
+              if (!newPlayer.playing && newPlayer.currentTime > 0) {
+                clearInterval(checkInterval);
+                setIsSpeaking(false);
+              }
+            } catch (_) {
+              clearInterval(checkInterval);
+              setIsSpeaking(false);
+            }
+          }, 500);
+
+          // Safety timeout
+          const duration = Math.max(text.length * 80, 5000);
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            setIsSpeaking(false);
+          }, Math.min(duration, 120000));
         }
+      } else {
+        setIsSpeaking(false);
       }
     } catch (e) {
       console.error('TTS error:', e);
