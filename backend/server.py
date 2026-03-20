@@ -136,7 +136,55 @@ async def delete_conversation(conversation_id: str):
     await db.messages.delete_many({"conversation_id": conversation_id})
     return {"status": "deleted"}
 
-# ─── Chat Endpoint (Text + Vision) ───
+# ─── Web Search Helper ───
+
+async def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web using DuckDuckGo and return formatted results."""
+    import asyncio
+    from ddgs import DDGS
+
+    def _search():
+        try:
+            ddgs = DDGS()
+            # Try news search first for current events
+            results = ddgs.news(query, max_results=max_results)
+            if not results:
+                # Fallback to text search
+                results = ddgs.text(query, max_results=max_results)
+            if not results:
+                return ""
+            formatted = []
+            for r in results:
+                title = r.get("title", "")
+                body = r.get("body", "")
+                source = r.get("source", "")
+                href = r.get("url", r.get("href", ""))
+                source_info = f" — {source}" if source else ""
+                formatted.append(f"• {title}{source_info}: {body} ({href})")
+            return "\n".join(formatted)
+        except Exception as e:
+            logger.error(f"Web search error: {e}")
+            return ""
+
+    return await asyncio.to_thread(_search)
+
+def needs_web_search(message: str) -> bool:
+    """Detect if a message likely needs real-time web data."""
+    msg = message.lower()
+    # Keywords that suggest real-time info is needed
+    triggers = [
+        "latest", "current", "today", "now", "recent", "news",
+        "weather", "price", "stock", "score", "update", "happening",
+        "who won", "who is winning", "results", "live", "real time",
+        "search", "look up", "find out", "what is the", "how much",
+        "when is", "where is", "2024", "2025", "2026", "this week",
+        "this month", "this year", "yesterday", "tomorrow",
+        "trending", "popular", "new release", "launched",
+        "election", "championship", "game", "match",
+    ]
+    return any(trigger in msg for trigger in triggers)
+
+# ─── Chat Endpoint (Text + Vision + Web Search) ───
 
 @api_router.post("/chat")
 async def chat(body: ChatRequest):
@@ -149,25 +197,46 @@ async def chat(body: ChatRequest):
         image_base64=body.image_base64
     )
 
+    # Check if web search is needed
+    search_context = ""
+    if needs_web_search(body.message):
+        logger.info(f"Web search triggered for: {body.message}")
+        search_results = await web_search(body.message, max_results=5)
+        if search_results:
+            search_context = (
+                f"\n\n[REAL-TIME WEB SEARCH RESULTS]\n"
+                f"The following information was retrieved from the internet just now:\n"
+                f"{search_results}\n"
+                f"[END SEARCH RESULTS]\n"
+            )
+
+    system_message = (
+        "You are J.A.R.V.I.S., an advanced AI assistant inspired by the iconic AI from Iron Man. "
+        "You are brilliant, witty, precise, and slightly formal but warm. "
+        "You address the user respectfully. You provide insightful, comprehensive answers. "
+        "Keep responses concise but thorough. Use technical language when appropriate. "
+        "You can analyze images when provided. Be helpful and proactive. "
+        "When web search results are provided, use them to give accurate real-time information. "
+        "Cite sources when using web search data. If search results are provided, prioritize that data for your answer."
+    )
+
     chat_instance = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=body.conversation_id,
-        system_message=(
-            "You are J.A.R.V.I.S., an advanced AI assistant inspired by the iconic AI from Iron Man. "
-            "You are brilliant, witty, precise, and slightly formal but warm. "
-            "You address the user respectfully. You provide insightful, comprehensive answers. "
-            "Keep responses concise but thorough. Use technical language when appropriate. "
-            "You can analyze images when provided. Be helpful and proactive."
-        )
+        system_message=system_message
     )
     chat_instance.with_model("openai", "gpt-5.2")
 
-    # Build user message with optional image
+    # Build user message with optional image and search context
+    message_text = body.message
+    if search_context:
+        message_text = f"{body.message}\n{search_context}"
+
     file_contents = []
     if body.image_base64:
         file_contents.append(ImageContent(image_base64=body.image_base64))
 
-    user_message = UserMessage(text=body.message, file_contents=file_contents if file_contents else None)
+    user_message = UserMessage(text=message_text, file_contents=file_contents if file_contents else None)
 
     try:
         response_text = await chat_instance.send_message(user_message)
