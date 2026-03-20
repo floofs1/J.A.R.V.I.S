@@ -14,7 +14,7 @@ import {
   Volume2, VolumeX, Menu, Plus, ChevronLeft, Trash2, Wand2,
 } from 'lucide-react-native';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'https://python-assistant-3.preview.emergentagent.com';
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 // ─── Types ───
