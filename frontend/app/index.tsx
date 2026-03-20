@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Audio } from 'expo-av';
+import { useAudioRecorder, RecordingPresets, useAudioPlayer } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import {
@@ -77,9 +77,12 @@ export default function JarvisChat() {
   const [showImageGen, setShowImageGen] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
-  const recordingRef = useRef<Audio.Recording | null>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const [ttsSource, setTtsSource] = useState<string | null>(null);
+
+  // expo-audio hooks
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const player = useAudioPlayer(ttsSource);
 
   // ─── Init ───
   useEffect(() => {
@@ -200,39 +203,25 @@ export default function JarvisChat() {
   // ─── Voice Recording ───
   const startRecording = async () => {
     try {
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Microphone access is needed for voice input.');
-        return;
-      }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      recordingRef.current = recording;
+      await recorder.prepareToRecordAsync();
+      recorder.record();
       setIsRecording(true);
     } catch (e) {
       console.error('Start recording error:', e);
-      Alert.alert('Error', 'Failed to start recording.');
+      Alert.alert('Error', 'Failed to start recording. Please check microphone permissions.');
     }
   };
 
   const stopRecording = async () => {
-    if (!recordingRef.current) return;
+    if (!isRecording) return;
     setIsRecording(false);
     setIsLoading(true);
 
     try {
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
+      await recorder.stop();
+      const uri = recorder.uri;
 
       if (!uri) throw new Error('No recording URI');
-
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
 
       // Upload for transcription
       const formData = new FormData();
@@ -262,10 +251,8 @@ export default function JarvisChat() {
   // ─── Text-to-Speech ───
   const speakText = async (text: string) => {
     if (isSpeaking) {
-      if (soundRef.current) {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-        soundRef.current = null;
+      if (player) {
+        player.pause();
       }
       setIsSpeaking(false);
       return;
@@ -289,25 +276,21 @@ export default function JarvisChat() {
           audioEl.onerror = () => setIsSpeaking(false);
           await audioEl.play();
         } else {
-          // Native: use expo-av with FileSystem
-          const fileUri = FileSystem.cacheDirectory + 'tts_output.mp3';
+          // Native: write file and use expo-audio player
+          const fileUri = FileSystem.cacheDirectory + 'tts_output_' + Date.now() + '.mp3';
           await FileSystem.writeAsStringAsync(fileUri, data.audio_base64, {
             encoding: FileSystem.EncodingType.Base64,
           });
-          await Audio.setAudioModeAsync({
-            allowsRecordingIOS: false,
-            playsInSilentModeIOS: true,
-          });
-          const { sound } = await Audio.Sound.createAsync({ uri: fileUri });
-          soundRef.current = sound;
-          sound.setOnPlaybackStatusUpdate((status) => {
-            if (status.isLoaded && status.didJustFinish) {
-              setIsSpeaking(false);
-              sound.unloadAsync();
-              soundRef.current = null;
+          setTtsSource(fileUri);
+          // Player will auto-load when ttsSource changes, then play
+          setTimeout(() => {
+            if (player) {
+              player.play();
             }
-          });
-          await sound.playAsync();
+          }, 300);
+          // Set timeout to reset speaking state
+          const duration = text.length * 80; // rough estimate
+          setTimeout(() => setIsSpeaking(false), Math.min(duration, 60000));
         }
       }
     } catch (e) {
