@@ -248,12 +248,14 @@ async def text_to_speech(body: TTSRequest):
 @api_router.post("/generate-image")
 async def generate_image(body: ImageGenerateRequest):
     from emergentintegrations.llm.openai.image_generation import OpenAIImageGeneration
+    from io import BytesIO
+    from PIL import Image as PILImage
 
     image_gen = OpenAIImageGeneration(api_key=EMERGENT_LLM_KEY)
 
     # Save user message
     user_msg = await save_message(
-        body.conversation_id, "user", f"🎨 Generate image: {body.prompt}",
+        body.conversation_id, "user", f"Generate image: {body.prompt}",
         message_type="text"
     )
 
@@ -264,7 +266,16 @@ async def generate_image(body: ImageGenerateRequest):
             number_of_images=1
         )
         if images and len(images) > 0:
-            image_base64 = base64.b64encode(images[0]).decode('utf-8')
+            # Compress image for mobile (resize + JPEG quality)
+            img = PILImage.open(BytesIO(images[0]))
+            img = img.convert("RGB")
+            if img.width > 768:
+                ratio = 768 / img.width
+                img = img.resize((768, int(img.height * ratio)), PILImage.LANCZOS)
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=80)
+            image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+
             ai_msg = await save_message(
                 body.conversation_id, "assistant",
                 f"Here's the generated image for: {body.prompt}",

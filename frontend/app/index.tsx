@@ -336,7 +336,9 @@ export default function JarvisChat() {
   // ─── Image Generation ───
   const generateImage = async () => {
     if (!imageGenPrompt.trim()) return;
+    const prompt = imageGenPrompt.trim();
     setShowImageGen(false);
+    setImageGenPrompt('');
     setIsLoading(true);
 
     try {
@@ -345,21 +347,52 @@ export default function JarvisChat() {
         cId = await createConversation();
       }
 
+      // Add a user message immediately for feedback
+      const tempUserMsg: Message = {
+        id: 'temp-user-' + Date.now(),
+        conversation_id: cId!,
+        role: 'user',
+        content: `🎨 Generate image: ${prompt}`,
+        message_type: 'text',
+        created_at: new Date().toISOString(),
+      };
+      setMessages(prev => [...prev, tempUserMsg]);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+
       const res = await fetch(`${BACKEND_URL}/api/generate-image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversation_id: cId, prompt: imageGenPrompt }),
+        body: JSON.stringify({ conversation_id: cId, prompt }),
+        signal: controller.signal,
       });
-      const data = await res.json();
-      if (data.user_message && data.ai_message) {
-        setMessages(prev => [...prev, data.user_message, data.ai_message]);
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        throw new Error(`Server error: ${res.status}`);
       }
-      setImageGenPrompt('');
+
+      const data = await res.json();
+      // Replace temp message with real messages
+      setMessages(prev => {
+        const filtered = prev.filter(m => m.id !== tempUserMsg.id);
+        const newMsgs = [];
+        if (data.user_message) newMsgs.push(data.user_message);
+        if (data.ai_message) newMsgs.push(data.ai_message);
+        return [...filtered, ...newMsgs];
+      });
       loadConversations();
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Image gen error:', e);
-      Alert.alert('Error', 'Image generation failed. Please try again.');
+      const errMsg = e?.name === 'AbortError'
+        ? 'Image generation timed out. Please try a simpler prompt.'
+        : 'Image generation failed. Please try again.';
+      Alert.alert('Error', errMsg);
+      // Remove temp message on error
+      setMessages(prev => prev.filter(m => !m.id.startsWith('temp-user-')));
     } finally {
       setIsLoading(false);
     }
@@ -388,7 +421,7 @@ export default function JarvisChat() {
         </View>
         {item.image_base64 ? (
           <Image
-            source={{ uri: `data:image/png;base64,${item.image_base64}` }}
+            source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }}
             style={styles.messageImage}
             resizeMode="contain"
           />
