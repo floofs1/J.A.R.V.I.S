@@ -79,10 +79,35 @@ export default function JarvisChat() {
   const flatListRef = useRef<FlatList>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const [ttsSource, setTtsSource] = useState<string | null>(null);
+  const [shouldPlayTts, setShouldPlayTts] = useState(false);
 
   // expo-audio hooks
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const player = useAudioPlayer(ttsSource);
+
+  // Auto-play TTS when source changes
+  useEffect(() => {
+    if (shouldPlayTts && player && ttsSource) {
+      try {
+        player.play();
+      } catch (e) {
+        console.error('TTS play error:', e);
+        setIsSpeaking(false);
+      }
+      setShouldPlayTts(false);
+    }
+  }, [ttsSource, shouldPlayTts, player]);
+
+  // Listen for playback completion
+  useEffect(() => {
+    if (!player) return;
+    const subscription = player.addListener('playbackStatusUpdate', (status: any) => {
+      if (status?.didJustFinish || status?.isBuffering === false && status?.playing === false && status?.positionMillis > 0) {
+        setIsSpeaking(false);
+      }
+    });
+    return () => subscription?.remove?.();
+  }, [player]);
 
   // ─── Init ───
   useEffect(() => {
@@ -282,15 +307,7 @@ export default function JarvisChat() {
             encoding: FileSystem.EncodingType.Base64,
           });
           setTtsSource(fileUri);
-          // Player will auto-load when ttsSource changes, then play
-          setTimeout(() => {
-            if (player) {
-              player.play();
-            }
-          }, 300);
-          // Set timeout to reset speaking state
-          const duration = text.length * 80; // rough estimate
-          setTimeout(() => setIsSpeaking(false), Math.min(duration, 60000));
+          setShouldPlayTts(true);
         }
       }
     } catch (e) {
